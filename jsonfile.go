@@ -36,7 +36,7 @@ func New[Data any](path string) (*JSONFile[Data], error) {
 		bytes: []byte("{}"),
 		data:  new(Data),
 	}
-	if err := file.write(func(*Data) error { return nil }, true); err != nil {
+	if err := file.write(func(*Data) error { return nil }, true, osFileSystem{}); err != nil {
 		return nil, fmt.Errorf("jsonfile.New: %w", err)
 	}
 	return file, nil
@@ -79,10 +79,10 @@ func (file *JSONFile[Data]) Read(fn func(data *Data)) {
 // the JSON file with the result. If fn or persistence fails, the in-memory data
 // remains unchanged.
 func (file *JSONFile[Data]) Write(fn func(*Data) error) error {
-	return file.write(fn, false)
+	return file.write(fn, false, osFileSystem{})
 }
 
-func (file *JSONFile[Data]) write(fn func(*Data) error, force bool) error {
+func (file *JSONFile[Data]) write(fn func(*Data) error, force bool, fsys fileSystem) error {
 	file.mu.Lock()
 	defer file.mu.Unlock()
 
@@ -108,7 +108,7 @@ func (file *JSONFile[Data]) write(fn func(*Data) error, force bool) error {
 	if err := json.Unmarshal(contents, persisted); err != nil {
 		return fmt.Errorf("jsonfile.JSONFile.Write: decode encoded data: %w", err)
 	}
-	if err := atomicWriteFile(osFileSystem{}, file.path, contents); err != nil {
+	if err := atomicWriteFile(fsys, file.path, contents); err != nil {
 		return fmt.Errorf("jsonfile.JSONFile.Write: %w", err)
 	}
 
@@ -117,8 +117,8 @@ func (file *JSONFile[Data]) write(fn func(*Data) error, force bool) error {
 	return nil
 }
 
-// syncedFile and fileSystem are the minimum I/O boundary needed to verify that
-// a temporary file is synced and closed before it is renamed.
+// syncedFile and fileSystem are the minimum I/O boundary needed to verify
+// persistence order and failure behavior.
 type syncedFile interface {
 	io.Writer
 	Name() string

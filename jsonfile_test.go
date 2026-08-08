@@ -5,7 +5,9 @@
 package jsonfile
 
 import (
+	"bytes"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -182,7 +184,7 @@ func TestNewReportsRenameError(t *testing.T) {
 func TestAtomicWriteSyncsBeforeCloseAndRename(t *testing.T) {
 	t.Parallel()
 
-	fsys := &recordingFileSystem{}
+	fsys := &faultFileSystem{destination: []byte("old")}
 	if err := atomicWriteFile(fsys, "/data/data.json", []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
@@ -190,74 +192,241 @@ func TestAtomicWriteSyncsBeforeCloseAndRename(t *testing.T) {
 	if !slices.Equal(fsys.events, want) {
 		t.Fatalf("operations = %v, want %v", fsys.events, want)
 	}
-	if fsys.renamedFrom != recordingTempPath || fsys.renamedTo != "/data/data.json" {
-		t.Errorf("Rename(%q, %q), want Rename(%q, %q)", fsys.renamedFrom, fsys.renamedTo, recordingTempPath, "/data/data.json")
+	if fsys.renamedFrom != faultTempPath || fsys.renamedTo != "/data/data.json" {
+		t.Errorf("Rename(%q, %q), want Rename(%q, %q)", fsys.renamedFrom, fsys.renamedTo, faultTempPath, "/data/data.json")
+	}
+	if !bytes.Equal(fsys.destination, []byte("{}")) {
+		t.Errorf("destination = %q, want %q", fsys.destination, "{}")
+	}
+	if fsys.removed {
+		t.Error("removed temporary file after successful rename")
 	}
 }
 
-func TestAtomicWriteStopsWhenSyncFails(t *testing.T) {
+func TestWriteStorageFailures(t *testing.T) {
 	t.Parallel()
 
-	syncErr := errors.New("sync failed")
-	fsys := &recordingFileSystem{syncErr: syncErr}
-	err := atomicWriteFile(fsys, "/data/data.json", []byte("{}"))
-	if !errors.Is(err, syncErr) {
-		t.Fatalf("atomicWriteFile() error = %v, want %v", err, syncErr)
+	diskFullErr := errors.New("disk full")
+	storageErr := errors.New("storage I/O failure")
+	tests := []struct {
+		name        string
+		fault       storageFault
+		faultErr    error
+		wantErr     error
+		wantEvents  []string
+		wantRemoved bool
+		wantRename  bool
+	}{
+		{
+			name:       "create temporary file",
+			fault:      faultCreate,
+			faultErr:   storageErr,
+			wantErr:    storageErr,
+			wantEvents: []string{"create"},
+		},
+		{
+			name:        "disk full during write",
+			fault:       faultWrite,
+			faultErr:    diskFullErr,
+			wantErr:     diskFullErr,
+			wantEvents:  []string{"create", "write", "close", "remove"},
+			wantRemoved: true,
+		},
+		{
+			name:        "partial write",
+			fault:       faultShortWrite,
+			wantErr:     io.ErrShortWrite,
+			wantEvents:  []string{"create", "write", "close", "remove"},
+			wantRemoved: true,
+		},
+		{
+			name:        "disk full during sync",
+			fault:       faultSync,
+			faultErr:    diskFullErr,
+			wantErr:     diskFullErr,
+			wantEvents:  []string{"create", "write", "sync", "close", "remove"},
+			wantRemoved: true,
+		},
+		{
+			name:        "failure during close",
+			fault:       faultClose,
+			faultErr:    storageErr,
+			wantErr:     storageErr,
+			wantEvents:  []string{"create", "write", "sync", "close", "remove"},
+			wantRemoved: true,
+		},
+		{
+			name:        "failure during rename",
+			fault:       faultRename,
+			faultErr:    storageErr,
+			wantErr:     storageErr,
+			wantEvents:  []string{"create", "write", "sync", "close", "rename", "remove"},
+			wantRemoved: true,
+			wantRename:  true,
+		},
 	}
-	want := []string{"create", "write", "sync", "close", "remove"}
-	if !slices.Equal(fsys.events, want) {
-		t.Fatalf("operations = %v, want %v", fsys.events, want)
+
+	type Data struct {
+		Value int `json:"value"`
 	}
-	if fsys.renamedFrom != "" {
-		t.Errorf("renamed temporary file after Sync failed")
+	original := []byte(`{"value":1}`)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fsys := &faultFileSystem{
+				fault:       test.fault,
+				faultErr:    test.faultErr,
+				destination: bytes.Clone(original),
+			}
+			file := &JSONFile[Data]{
+				path:  "/data/data.json",
+				bytes: bytes.Clone(original),
+				data:  &Data{Value: 1},
+			}
+
+			err := file.write(func(data *Data) error {
+				data.Value = 2
+				return nil
+			}, false, fsys)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("Write() error = %v, want %v", err, test.wantErr)
+			}
+			if !slices.Equal(fsys.events, test.wantEvents) {
+				t.Errorf("operations = %v, want %v", fsys.events, test.wantEvents)
+			}
+			if fsys.removed != test.wantRemoved {
+				t.Errorf("temporary file removed = %t, want %t", fsys.removed, test.wantRemoved)
+			}
+			if test.wantRemoved && fsys.removedPath != faultTempPath {
+				t.Errorf("Remove(%q), want Remove(%q)", fsys.removedPath, faultTempPath)
+			}
+			if (fsys.renamedFrom != "") != test.wantRename {
+				t.Errorf("rename attempted = %t, want %t", fsys.renamedFrom != "", test.wantRename)
+			}
+			if test.wantRename && (fsys.renamedFrom != faultTempPath || fsys.renamedTo != file.path) {
+				t.Errorf("Rename(%q, %q), want Rename(%q, %q)", fsys.renamedFrom, fsys.renamedTo, faultTempPath, file.path)
+			}
+			if !bytes.Equal(fsys.destination, original) {
+				t.Errorf("persisted data = %q, want unchanged %q", fsys.destination, original)
+			}
+			if !bytes.Equal(file.bytes, original) {
+				t.Errorf("cached JSON = %q, want unchanged %q", file.bytes, original)
+			}
+			file.Read(func(data *Data) {
+				if data.Value != 1 {
+					t.Errorf("in-memory Value = %d, want unchanged 1", data.Value)
+				}
+			})
+
+			fsys.fault = faultNone
+			if err := file.write(func(data *Data) error {
+				data.Value = 3
+				return nil
+			}, false, fsys); err != nil {
+				t.Fatalf("Write() after failure: %v", err)
+			}
+			wantRecovered := []byte(`{"value":3}`)
+			if !bytes.Equal(fsys.destination, wantRecovered) {
+				t.Errorf("persisted data after recovery = %q, want %q", fsys.destination, wantRecovered)
+			}
+			file.Read(func(data *Data) {
+				if data.Value != 3 {
+					t.Errorf("in-memory Value after recovery = %d, want 3", data.Value)
+				}
+			})
+		})
 	}
 }
 
-const recordingTempPath = "/data/data.json.tmp-test"
+const faultTempPath = "/data/data.json.tmp-test"
 
-type recordingFileSystem struct {
+type storageFault uint8
+
+const (
+	faultNone storageFault = iota
+	faultCreate
+	faultWrite
+	faultShortWrite
+	faultSync
+	faultClose
+	faultRename
+)
+
+type faultFileSystem struct {
+	fault       storageFault
+	faultErr    error
 	events      []string
-	syncErr     error
+	temporary   []byte
+	destination []byte
+	removed     bool
+	removedPath string
 	renamedFrom string
 	renamedTo   string
 }
 
-func (fsys *recordingFileSystem) CreateTemp(_, _ string) (syncedFile, error) {
+func (fsys *faultFileSystem) CreateTemp(_, _ string) (syncedFile, error) {
 	fsys.events = append(fsys.events, "create")
-	return &recordingFile{fsys: fsys}, nil
+	if fsys.fault == faultCreate {
+		return nil, fsys.faultErr
+	}
+	return &faultFile{fsys: fsys}, nil
 }
 
-func (fsys *recordingFileSystem) Rename(oldPath, newPath string) error {
+func (fsys *faultFileSystem) Rename(oldPath, newPath string) error {
 	fsys.events = append(fsys.events, "rename")
 	fsys.renamedFrom = oldPath
 	fsys.renamedTo = newPath
+	if fsys.fault == faultRename {
+		return fsys.faultErr
+	}
+	fsys.destination = bytes.Clone(fsys.temporary)
+	fsys.temporary = nil
 	return nil
 }
 
-func (fsys *recordingFileSystem) Remove(string) error {
+func (fsys *faultFileSystem) Remove(path string) error {
 	fsys.events = append(fsys.events, "remove")
+	fsys.temporary = nil
+	fsys.removed = true
+	fsys.removedPath = path
 	return nil
 }
 
-type recordingFile struct {
-	fsys *recordingFileSystem
+type faultFile struct {
+	fsys *faultFileSystem
 }
 
-func (file *recordingFile) Write(contents []byte) (int, error) {
+func (file *faultFile) Write(contents []byte) (int, error) {
 	file.fsys.events = append(file.fsys.events, "write")
-	return len(contents), nil
+	switch file.fsys.fault {
+	case faultWrite:
+		return 0, file.fsys.faultErr
+	case faultShortWrite:
+		written := max(0, len(contents)-1)
+		file.fsys.temporary = bytes.Clone(contents[:written])
+		return written, nil
+	default:
+		file.fsys.temporary = bytes.Clone(contents)
+		return len(contents), nil
+	}
 }
 
-func (*recordingFile) Name() string {
-	return recordingTempPath
+func (*faultFile) Name() string {
+	return faultTempPath
 }
 
-func (file *recordingFile) Sync() error {
+func (file *faultFile) Sync() error {
 	file.fsys.events = append(file.fsys.events, "sync")
-	return file.fsys.syncErr
+	if file.fsys.fault == faultSync {
+		return file.fsys.faultErr
+	}
+	return nil
 }
 
-func (file *recordingFile) Close() error {
+func (file *faultFile) Close() error {
 	file.fsys.events = append(file.fsys.events, "close")
+	if file.fsys.fault == faultClose {
+		return file.fsys.faultErr
+	}
 	return nil
 }
