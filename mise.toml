@@ -1,0 +1,45 @@
+[tools]
+go = "1.26.5"
+
+[tasks.update]
+description = "Update direct dependencies"
+run = [
+  "go get -u ./...",
+  "go mod tidy",
+  "mise run check",
+]
+
+[tasks.fmt]
+description = "Format Go files"
+run = [
+  "find . -name '*.go' -print0 | xargs -0 go run golang.org/x/tools/cmd/goimports@latest -w",
+  "find . -name '*.go' -print0 | xargs -0 go run mvdan.cc/gofumpt@latest -w",
+]
+
+[tasks.lint]
+description = "Run Go linters"
+run = [
+  "test -z \"$(find . -name '*.go' -print0 | xargs -0 go run golang.org/x/tools/cmd/goimports@latest -l)\"",
+  "test -z \"$(find . -name '*.go' -print0 | xargs -0 go run mvdan.cc/gofumpt@latest -l)\"",
+  "go vet ./...",
+  "go run golang.org/x/vuln/cmd/govulncheck@latest ./...",
+  "go run honnef.co/go/tools/cmd/staticcheck@latest ./...",
+  "go run github.com/kisielk/errcheck@latest ./...",
+]
+
+[tasks.test]
+description = "Run tests"
+run = "go test -race ./..."
+
+[tasks.build]
+description = "Build packages"
+run = "go build ./..."
+
+[tasks.check]
+description = "Format, lint, test, build"
+run = [
+  "mise run fmt",
+  "mise run lint",
+  "mise run test",
+  "mise run build",
+]
