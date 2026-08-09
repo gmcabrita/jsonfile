@@ -6,14 +6,18 @@ package jsonfile
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"testing"
+
+	"hegel.dev/go/hegel"
 )
 
 func mustWrite[Data any](t *testing.T, file *JSONFile[Data], fn func(*Data)) {
@@ -335,6 +339,175 @@ func TestWriteStorageFailures(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestJSONFileStateful(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		hegel.RunStateful(ht, newJSONFileStateMachine())
+	})
+}
+
+type statefulData struct {
+	Number int64   `json:"number"`
+	Label  string  `json:"label"`
+	Values []int64 `json:"values"`
+}
+
+type jsonFileStateMachine struct {
+	file        *JSONFile[statefulData]
+	fsys        *faultFileSystem
+	model       statefulData
+	callbackErr error
+	storageErr  error
+}
+
+func newJSONFileStateMachine() *jsonFileStateMachine {
+	model := statefulData{}
+	contents, err := json.Marshal(model)
+	if err != nil {
+		panic(err)
+	}
+	return &jsonFileStateMachine{
+		file: &JSONFile[statefulData]{
+			path:  "/data/data.json",
+			bytes: bytes.Clone(contents),
+			data:  new(statefulData),
+		},
+		fsys:        &faultFileSystem{destination: bytes.Clone(contents)},
+		model:       model,
+		callbackErr: errors.New("injected callback failure"),
+		storageErr:  errors.New("injected storage failure"),
+	}
+}
+
+func drawStatefulData(tc hegel.TestCase) statefulData {
+	return statefulData{
+		Number: hegel.Draw(tc, hegel.Integers[int64](math.MinInt64, math.MaxInt64)),
+		Label:  hegel.Draw(tc, hegel.Text()),
+		Values: hegel.Draw(tc, hegel.Lists(hegel.Integers[int64](math.MinInt64, math.MaxInt64))),
+	}
+}
+
+func drawDifferentStatefulData(tc hegel.TestCase, currentJSON []byte) statefulData {
+	next := drawStatefulData(tc)
+	contents, err := json.Marshal(next)
+	if err != nil {
+		panic(err)
+	}
+	if bytes.Equal(contents, currentJSON) {
+		next.Number++
+	}
+	return next
+}
+
+func (machine *jsonFileStateMachine) RuleWrite(tc hegel.TestCase) {
+	next := drawStatefulData(tc)
+	if err := machine.file.write(func(data *statefulData) error {
+		*data = next
+		return nil
+	}, false, machine.fsys); err != nil {
+		tc.Errorf("successful Write() returned an error: %v", err)
+		return
+	}
+	machine.model = next
+}
+
+func (machine *jsonFileStateMachine) RuleNoop(tc hegel.TestCase) {
+	events := len(machine.fsys.events)
+	if err := machine.file.write(func(*statefulData) error { return nil }, false, machine.fsys); err != nil {
+		tc.Errorf("no-op Write() returned an error: %v", err)
+		return
+	}
+	if len(machine.fsys.events) != events {
+		tc.Errorf("no-op Write() performed storage operations: %v", machine.fsys.events[events:])
+	}
+}
+
+func (machine *jsonFileStateMachine) RuleCallbackFailure(tc hegel.TestCase) {
+	next := drawStatefulData(tc)
+	err := machine.file.write(func(data *statefulData) error {
+		*data = next
+		return machine.callbackErr
+	}, false, machine.fsys)
+	if !errors.Is(err, machine.callbackErr) {
+		tc.Errorf("Write() callback error = %v, want %v", err, machine.callbackErr)
+	}
+}
+
+func (machine *jsonFileStateMachine) RuleStorageFailure(tc hegel.TestCase) {
+	fault := hegel.Draw(tc, hegel.SampledFrom([]storageFault{
+		faultCreate,
+		faultWrite,
+		faultShortWrite,
+		faultSync,
+		faultClose,
+		faultRename,
+	}))
+	next := drawDifferentStatefulData(tc, machine.file.bytes)
+	machine.fsys.fault = fault
+	machine.fsys.faultErr = machine.storageErr
+	defer func() {
+		machine.fsys.fault = faultNone
+		machine.fsys.faultErr = nil
+	}()
+
+	err := machine.file.write(func(data *statefulData) error {
+		*data = next
+		return nil
+	}, false, machine.fsys)
+
+	wantErr := machine.storageErr
+	if fault == faultShortWrite {
+		wantErr = io.ErrShortWrite
+	}
+	if !errors.Is(err, wantErr) {
+		tc.Errorf("Write() storage error = %v, want %v", err, wantErr)
+	}
+}
+
+func (machine *jsonFileStateMachine) InvariantConsistent(tc hegel.TestCase) {
+	if machine.fsys.fault != faultNone {
+		tc.Errorf("storage fault was not reset: %d", machine.fsys.fault)
+		return
+	}
+	if machine.fsys.temporary != nil {
+		tc.Errorf("temporary data was not cleaned up: %q", machine.fsys.temporary)
+		return
+	}
+	if !bytes.Equal(machine.file.bytes, machine.fsys.destination) {
+		tc.Errorf("cached JSON %q differs from persisted JSON %q", machine.file.bytes, machine.fsys.destination)
+		return
+	}
+
+	var memory statefulData
+	machine.file.Read(func(data *statefulData) {
+		memory = *data
+	})
+	if !reflect.DeepEqual(memory, machine.model) {
+		tc.Errorf("in-memory data = %#v, want model %#v", memory, machine.model)
+		return
+	}
+
+	var cached statefulData
+	if err := json.Unmarshal(machine.file.bytes, &cached); err != nil {
+		tc.Errorf("decode cached JSON: %v", err)
+		return
+	}
+	if !reflect.DeepEqual(cached, machine.model) {
+		tc.Errorf("cached data = %#v, want model %#v", cached, machine.model)
+		return
+	}
+
+	var persisted statefulData
+	if err := json.Unmarshal(machine.fsys.destination, &persisted); err != nil {
+		tc.Errorf("decode persisted JSON: %v", err)
+		return
+	}
+	if !reflect.DeepEqual(persisted, machine.model) {
+		tc.Errorf("persisted data = %#v, want model %#v", persisted, machine.model)
 	}
 }
 
