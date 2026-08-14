@@ -2,7 +2,7 @@ module github.com/gmcabrita/jsonfile
 
 go 1.25.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require hegel.dev/go/hegel v0.6.25
 

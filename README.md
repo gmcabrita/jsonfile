@@ -53,5 +53,5 @@ Treat values passed to `Read` as read-only and do not keep them after the
 callback. This package does not coordinate multiple processes. Move to a real
 database when the data needs indexes or frequent writes.
 
-This is a Go 1.26.5 reimplementation of
+This is reimplementation of
 [`crawshaw.dev/jsonfile`](https://github.com/crawshaw/jsonfile).
