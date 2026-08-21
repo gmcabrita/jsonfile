@@ -4,7 +4,7 @@ go 1.25.0
 
 toolchain go1.27.0
 
-require hegel.dev/go/hegel v0.6.25
+require hegel.dev/go/hegel v0.6.30
 
 require (
 	github.com/ebitengine/purego v0.11.0-alpha.6.0.20260707033313-5f49e7c49322 // indirect
