@@ -14,9 +14,11 @@ concurrency:
 
 jobs:
   check:
-    name: Check
+    name: Current Go toolchain checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      GOTOOLCHAIN: local
 
     steps:
       - name: Check out repository
@@ -27,6 +29,12 @@ jobs:
         with:
           # renovate: datasource=github-releases depName=jdx/mise extractVersion=^v(?<version>.*)$
           version: 2026.8.10
+
+      - name: Verify current Go version
+        run: |
+          version=$(awk '$1 == "toolchain" { sub(/^go/, "", $2); print $2; exit }' go.mod)
+          test -n "$version"
+          test "$(go env GOVERSION)" = "go$version"
 
       - name: Run checks
         run: mise run check
@@ -39,7 +47,7 @@ jobs:
           fi
 
   minimum-go:
-    name: Go 1.25 compatibility
+    name: Minimum Go compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -49,10 +57,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Read minimum Go version
+        id: minimum
+        run: |
+          version=$(awk '$1 == "go" { print $2; exit }' go.mod)
+          test -n "$version"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: 1.25.0
+          go-version: ${{ steps.minimum.outputs.version }}
 
       - name: Run tests
         run: go test -race ./...
