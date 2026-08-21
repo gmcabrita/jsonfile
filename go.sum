@@ -4,3 +4,5 @@ golang.org/x/sys v0.44.0 h1:ildZl3J4uzeKP07r2F++Op7E9B29JRUy+a27EibtBTQ=
 golang.org/x/sys v0.44.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
 hegel.dev/go/hegel v0.6.25 h1:UzuqOpJWr3dVdAN4oOtISA3ukkV015FLAz35QecWgPM=
 hegel.dev/go/hegel v0.6.25/go.mod h1:SQZksLxpfxeGnV24rgAsAWP1jhMLwbmF1y448HQ1H44=
+hegel.dev/go/hegel v0.6.30 h1:SFmxClsHKXIMsZ29WewsVI+TfOsIQENtNvGt13p3l68=
+hegel.dev/go/hegel v0.6.30/go.mod h1:SQZksLxpfxeGnV24rgAsAWP1jhMLwbmF1y448HQ1H44=
