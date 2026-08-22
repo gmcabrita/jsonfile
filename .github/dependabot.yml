@@ -1,0 +1,23 @@
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # Staticcheck 0.8 and later require Go 1.26 or later.
+      - dependency-name: honnef.co/go/tools
+        versions:
+          - ">= 0.8.0"
+    commit-message:
+      prefix: fix
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
