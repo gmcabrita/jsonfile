@@ -65,37 +65,3 @@ jobs:
             git status --short
             exit 1
           fi
-
-  minimum-go:
-    name: Minimum Go compatibility
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      GOTOOLCHAIN: local
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Read minimum Go version
-        id: minimum-go
-        run: |
-          version=$(awk '$1 == "go" { print $2; exit }' go.mod)
-          test -n "$version"
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-
-      - name: Set up minimum Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: ${{ steps.minimum-go.outputs.version }}
-          cache: true
-
-      - name: Verify minimum Go version
-        env:
-          EXPECTED_GO_VERSION: ${{ steps.minimum-go.outputs.version }}
-        run: test "$(go env GOVERSION)" = "go$EXPECTED_GO_VERSION"
-
-      - name: Run tests
-        run: go test -race ./...

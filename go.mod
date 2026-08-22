@@ -1,8 +1,6 @@
 module github.com/gmcabrita/jsonfile
 
-go 1.25.0
-
-toolchain go1.27.0
+go 1.27.0
 
 require hegel.dev/go/hegel v0.6.30
 
@@ -17,7 +15,7 @@ require (
 	golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 // indirect
 	golang.org/x/tools v0.49.0 // indirect
 	golang.org/x/vuln v1.7.0 // indirect
-	honnef.co/go/tools v0.7.0 // indirect
+	honnef.co/go/tools v0.8.1 // indirect
 	mvdan.cc/gofumpt v0.11.0 // indirect
 )
 
