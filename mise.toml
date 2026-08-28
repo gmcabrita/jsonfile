@@ -1,8 +1,11 @@
 [tools]
+"npm:skills" = "latest"
 
 [tasks.update]
 description = "Update direct dependencies"
 run = [
+  "skills add hegeldev/hegel-skill --skill hegel --agent universal --yes",
+  "skills add JetBrains/go-modern-guidelines --skill use-modern-go --agent universal --yes",
   "go get -u ./...",
   "go mod tidy",
   "mise run check",
